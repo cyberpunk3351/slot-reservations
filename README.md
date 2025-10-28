@@ -1,59 +1,99 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Slots Reservations API
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+## Стек
 
-## About Laravel
+* PHP 8.2+, Laravel 12
+* MySQL 8+
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Установка
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+```bash
+git clone <repo_url> slots-reservations
+cd slots-reservations
+docker exec -it slot-reservations_app cp .env.example .env
+docker exec -it slot-reservations_app composer install
+docker exec -it slot-reservations_appphp artisan key:generate
+docker exec -it slot-reservations_appphp artisan migrate --seed
+```
+Токен пользователя для авторизации надо будет поместить в заголовок `Authorization: Bearer <token>`.
+## Эндпоинты
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+### 1) Доступные слоты (горячий кеш 10 с)
 
-## Learning Laravel
+**GET** `/api/slots/availability`
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+**Пример ответа**
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+```json
+[
+  { "slot_id": 1, "capacity": 10, "remaining": 10 },
+  { "slot_id": 2, "capacity": 5,  "remaining": 0 }
+]
+```
 
-## Laravel Sponsors
+---
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+### 2) Создание холда (идемпотентно)
 
-### Premium Partners
+**POST** `/api/slots/{id}/hold`
+**Headers:** `Idempotency-Key: <UUID>`
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+**Успех (201) — пример запроса**
 
-## Contributing
+```bash
+curl -i -X POST http://127.0.0.1:8000/api/slots/1/hold \
+  -H "Idempotency-Key: 14f0b6e8-82e1-4b76-b586-1f2f6b5d8f20"
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+**Ответ**
 
-## Code of Conduct
+```json
+{ "hold_id": 7, "status": "held", "expires_at": "2025-10-25T13:45:00+00:00" }
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+Повтор с тем же ключом — тот же ответ **(201)**.
 
-## Security Vulnerabilities
+**Конфликт (409), если мест нет**
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+```json
+{ "error": "Capacity exhausted" }
+```
 
-## License
+---
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+### 3) Подтверждение холда (атомарное уменьшение)
+
+**POST** `/api/holds/{id}/confirm`
+
+**Успех (200)**
+
+```json
+{ "hold_id": 7, "status": "confirmed" }
+```
+
+**Конфликт (409) при оверселе**
+
+```json
+{ "error": "No remaining capacity" }
+```
+
+После успешного подтверждения — инвалидируется кеш доступности.
+
+---
+
+### 4) Отмена холда
+
+**DELETE** `/api/holds/{id}`
+
+**Успех (200)**
+
+```json
+{ "hold_id": 7, "status": "cancelled" }
+```
+
+Если холд был `confirmed` — остаток слота увеличивается на 1; если `held` — остаток не меняется. После отмены — инвалидируется кеш доступности.
+
+## Замечания
+
+* Холды живут **5 минут**.
+* Идемпотентность реализована через таблицу `idempotency_keys`: повтор по одному и тому же ключу вернёт ровно тот же код и тело ответа.
