@@ -8,12 +8,12 @@
 ## Установка
 
 ```bash
-git clone <repo_url> slots-reservations
+git clone https://github.com/cyberpunk3351/slot-reservations slots-reservations
 cd slots-reservations
 docker exec -it slot-reservations_app cp .env.example .env
 docker exec -it slot-reservations_app composer install
-docker exec -it slot-reservations_appphp artisan key:generate
-docker exec -it slot-reservations_appphp artisan migrate --seed
+docker exec -it slot-reservations_app php artisan key:generate
+docker exec -it slot-reservations_app php artisan migrate --seed
 ```
 Токен пользователя для авторизации надо будет поместить в заголовок `Authorization: Bearer <token>`.
 ## Эндпоинты
